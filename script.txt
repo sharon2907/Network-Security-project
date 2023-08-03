@@ -1,0 +1,173 @@
+
+#!/bin/bash
+
+# Colors for text formatting
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+services_enabled=false
+
+# Get the user IP
+user_ip=$(hostname -I | cut -d' ' -f1)
+
+#choose services to enable
+function choose_services() {
+    echo "Select services to enable:"
+    echo "1. $(tput setaf 2)SSH$(tput sgr0)"
+    echo "2. $(tput setaf 2)FTP$(tput sgr0)"
+    echo "3. $(tput setaf 2)SMB$(tput sgr0)"
+    echo "4. $(tput setaf 2)All services$(tput sgr0)"
+    read -p "Enter your choice (1/2/3/4): " choice
+
+    case $choice in
+        1) enable_service "SSH" ;;
+        2) enable_service "FTP" ;;
+        3) enable_service "SMB" ;;
+        4) enable_all ;;
+        *) echo "$(tput setaf 1)Invalid choice. Please try again.$(tput sgr0)" ;;
+    esac
+}
+
+# enable a specific service
+function enable_service() {
+    service_name=$1
+    echo "$(tput setaf 2)Enabling $service_name service...$(tput sgr0)"
+    case $service_name in
+        "SSH") sudo service ssh start ;;
+        "FTP") sudo service vsftpd start ;;
+        "SMB") sudo systemctl start smb ;;
+    esac
+    services_enabled=true
+    echo "$(date +"%Y-%m-%d %H:%M:%S %Z"): $user_ip accessed $service_name." >> /home/kali/Desktop/honeypot.log
+}
+
+# enable all services
+function enable_all() {
+    echo "$(tput setaf 2)Enabling all services...$(tput sgr0)"
+    enable_service "SSH"
+    enable_service "FTP"
+    enable_service "SMB"
+    services_enabled=true
+    echo "$(date +"%Y-%m-%d %H:%M:%S %Z"): $user_ip accessed all services." >> /home/kali/Desktop/honeypot.log
+}
+
+#  log and audit user activity
+function log_and_audit() {
+    echo "Logging and auditing user activity..."
+
+    # Check if msfconsole command is available
+    if command -v msfconsole &>/dev/null; then
+      
+        read -p "Enter the target user's IP addresses or hostnames : " target_hosts
+        if [ -z "$target_hosts" ]; then
+            echo "No target hosts provided. Unable to perform logging and auditing."
+            return
+        fi
+
+       
+        echo "use auxiliary/scanner/ssh/ssh_login" > /tmp/msf_commands.rc
+        echo "set RHOSTS $target_hosts" >> /tmp/msf_commands.rc
+        echo "set THREADS 10"       
+        echo "run" >> /tmp/msf_commands.rc
+        echo "exit" >> /tmp/msf_commands.rc
+        msfconsole -r /tmp/msf_commands.rc > /home/kali/Desktop/honeypot_audit.log
+        rm /tmp/msf_commands.rc
+    else
+        echo "msfconsole command not found. Unable to perform logging and auditing."
+    fi
+}
+
+
+# check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# performing scanning using IP addresses from the log
+function scanning() {
+    clear
+    echo "Scanning IP addresses from the log..."
+
+    log_file="/home/kali/Desktop/honeypot.log"
+
+    if [ ! -f "$log_file" ]; then
+        echo "Error: Log file not found. Please make sure the 'honeypot.log' file exists and try again."
+        return 1
+    fi
+
+    # Extract IP addresses from the log using grep
+    ip_addresses=($(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$log_file" | sort -u))
+
+    if [ ${#ip_addresses[@]} -eq 0 ]; then
+        echo "No IP addresses found in the log."
+        return 1
+    fi
+
+    # Debugging: Show the extracted IP addresses
+    echo "Extracted IP addresses from log:"
+    printf '%s\n' "${ip_addresses[@]}"
+
+    if ! command_exists nmap; then
+        echo "Error: 'nmap' command not found. Unable to perform scanning."
+        return 1
+    fi
+
+    for ip in "${ip_addresses[@]}"
+    do
+        echo "Scanning IP address: $ip"
+        nmap -Pn -A "$ip" >> scan_results.txt
+        echo "------------------------------------" >> scan_results.txt
+    done
+
+    echo "Scanning completed. Results saved to scan_results.txt."
+}
+
+# monitor honeypot activity in live-mode 
+function monitoring() {
+    clear
+    echo "Live-mode Honeypot Activity Monitoring"
+    echo "Press Ctrl+C to exit."
+    log_file="/home/kali/Desktop/honeypot.log"
+
+    # Check if the log file exists before tailing it
+    if [ -f "$log_file" ]; then
+        tail -n 0 -F "$log_file" | while read -r line
+        do
+            echo -e "$line"
+        done
+    else
+        echo "$(tput setaf 1)Log file not found. Please ensure that the 'honeypot.log' file exists and try again.$(tput sgr0)"
+    fi
+}
+
+# Main menu
+monitoring &
+
+choose_services
+ sleep 1
+
+# Continue with other functions
+log_and_audit
+scanning
+
+# Display main menu again
+while true; do
+    echo "Honeypot Menu:"
+    echo "1. Choose services"
+    echo "2. Log and Audit"
+    echo "3. Scanning"
+    echo "4. Monitoring"
+    echo "5. Exit"
+    read -p "Enter your choice (1/2/3/4/5): " choice
+
+     case $choice in
+        1) choose_services ;;
+        2) log_and_audit ;;
+        3) scanning ;;
+        4) monitoring ;;
+        5) echo "Exiting. Goodbye!"; exit ;;
+        *) echo "Invalid choice. Please try again." ;;
+    esac
+done
